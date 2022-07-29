@@ -2,11 +2,9 @@ package helpers
 
 import (
 	"context"
-	"strconv"
 	"strings"
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
-	ibcexported "github.com/cosmos/ibc-go/v4/modules/core/exported"
 	"github.com/cosmos/relayer/v2/relayer"
 )
 
@@ -53,18 +51,4 @@ func QueryBalance(ctx context.Context, chain *relayer.Chain, address string, sho
 		}
 	}
 	return out, nil
-}
-
-// QueryHeader is a helper function for query header
-func QueryHeader(ctx context.Context, chain *relayer.Chain, opts ...string) (ibcexported.Header, error) {
-	if len(opts) > 0 {
-		height, err := strconv.ParseInt(opts[0], 10, 64) //convert to int64
-		if err != nil {
-			return nil, err
-		}
-
-		return chain.ChainProvider.QueryHeaderAtHeight(ctx, height)
-	}
-
-	return chain.ChainProvider.GetLightSignedHeaderAtHeight(ctx, 0)
 }

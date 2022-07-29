@@ -6,7 +6,6 @@ import (
 	"strconv"
 	"strings"
 
-	ibcexported "github.com/cosmos/ibc-go/v4/modules/core/exported"
 	"github.com/cosmos/relayer/v2/helpers"
 	"github.com/cosmos/relayer/v2/relayer"
 	"github.com/spf13/cobra"
@@ -30,8 +29,6 @@ func queryCmd(a *appState) *cobra.Command {
 		queryHeaderCmd(a),
 		queryNodeStateCmd(a),
 		//queryValSetAtHeightCmd(),
-		queryTxs(a),
-		queryTx(a),
 		lineBreakCommand(),
 		queryClientCmd(a),
 		queryClientsCmd(a),
@@ -112,91 +109,6 @@ $ %s q denom-trace osmosis 9BBA9A1C257E971E38C1422780CE6F0B0686F0A3085E2D61118D9
 	}
 
 	return cmd
-}
-
-func queryTx(a *appState) *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "tx chain_name tx_hash",
-		Short: "query for a transaction on a given network by transaction hash and chain ID",
-		Args:  withUsage(cobra.ExactArgs(2)),
-		Example: strings.TrimSpace(fmt.Sprintf(`
-$ %s query tx ibc-0 [tx-hash]
-$ %s q tx ibc-0 A5DF8D272F1C451CFF92BA6C41942C4D29B5CF180279439ED6AB038282F956BE`,
-			appName, appName,
-		)),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			chain, ok := a.Config.Chains[args[0]]
-			if !ok {
-				return errChainNotFound(args[0])
-			}
-
-			txs, err := chain.ChainProvider.QueryTx(cmd.Context(), args[1])
-			if err != nil {
-				return err
-			}
-
-			out, err := json.Marshal(txs)
-			if err != nil {
-				return err
-			}
-
-			fmt.Fprintln(cmd.OutOrStdout(), string(out))
-			return nil
-		},
-	}
-
-	return cmd
-}
-
-func queryTxs(a *appState) *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "txs chain_name events",
-		Short: "query for transactions on a given network by chain ID and a set of transaction events",
-		Long: strings.TrimSpace(`Search for a paginated list of transactions that match the given set of
-events. Each event takes the form of '{eventType}.{eventAttribute}={value}' with multiple events
-separated by '&'.
-
-Please refer to each module's documentation for the full set of events to query for. Each module
-documents its respective events under 'cosmos-sdk/x/{module}/spec/xx_events.md'.`,
-		),
-		Args: withUsage(cobra.ExactArgs(2)),
-		Example: strings.TrimSpace(fmt.Sprintf(`
-$ %s query txs ibc-0 "message.action=transfer" --offset 1 --limit 10
-$ %s q txs ibc-0 "message.action=transfer"`,
-			appName, appName,
-		)),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			chain, ok := a.Config.Chains[args[0]]
-			if !ok {
-				return errChainNotFound(args[0])
-			}
-
-			offset, err := cmd.Flags().GetUint64(flagOffset)
-			if err != nil {
-				return err
-			}
-
-			limit, err := cmd.Flags().GetUint64(flagLimit)
-			if err != nil {
-				return err
-			}
-
-			txs, err := chain.ChainProvider.QueryTxs(cmd.Context(), int(offset), int(limit), []string{args[1]})
-			if err != nil {
-				return err
-			}
-
-			out, err := json.Marshal(txs)
-			if err != nil {
-				return err
-			}
-
-			fmt.Fprintln(cmd.OutOrStdout(), string(out))
-			return nil
-		},
-	}
-
-	return paginationFlags(a.Viper, cmd, "txs")
 }
 
 //func queryAccountCmd() *cobra.Command {
@@ -317,23 +229,29 @@ $ %s query header ibc-0 1400`,
 				return errChainNotFound(args[0])
 			}
 
-			var header ibcexported.Header
-			var err error
+			var height int64
 			switch len(args) {
 			case 1:
-				header, err = chain.ChainProvider.GetLightSignedHeaderAtHeight(cmd.Context(), 0)
+				var err error
+				height, err = chain.ChainProvider.QueryLatestHeight(cmd.Context())
 				if err != nil {
 					return err
 				}
 
 			case 2:
-				header, err = helpers.QueryHeader(cmd.Context(), chain, args[1])
+				var err error
+				height, err = strconv.ParseInt(args[1], 10, 64)
 				if err != nil {
 					return err
 				}
 			}
 
-			s, err := chain.ChainProvider.Sprint(header)
+			header, err := chain.ChainProvider.QueryIBCHeader(cmd.Context(), height)
+			if err != nil {
+				return err
+			}
+
+			s, err := json.Marshal(header)
 			if err != nil {
 				fmt.Fprintf(cmd.ErrOrStderr(), "Failed to marshal header: %v\n", err)
 				return err

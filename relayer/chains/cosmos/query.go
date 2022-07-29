@@ -3,7 +3,6 @@ package cosmos
 import (
 	"context"
 	"encoding/binary"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -27,36 +26,14 @@ import (
 	"github.com/cosmos/relayer/v2/relayer/provider"
 	abci "github.com/tendermint/tendermint/abci/types"
 	tmtypes "github.com/tendermint/tendermint/types"
+	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
 )
 
 var _ provider.QueryProvider = &CosmosProvider{}
 
-// QueryTx takes a transaction hash and returns the transaction
-func (cc *CosmosProvider) QueryTx(ctx context.Context, hashHex string) (*provider.RelayerTxResponse, error) {
-	hash, err := hex.DecodeString(hashHex)
-	if err != nil {
-		return nil, err
-	}
-
-	resp, err := cc.RPCClient.Tx(ctx, hash, true)
-	if err != nil {
-		return nil, err
-	}
-
-	events := parseEventsFromResponseDeliverTx(resp.TxResult)
-
-	return &provider.RelayerTxResponse{
-		Height: resp.Height,
-		TxHash: string(hash),
-		Code:   resp.TxResult.Code,
-		Data:   string(resp.TxResult.Data),
-		Events: events,
-	}, nil
-}
-
-// QueryTxs returns an array of transactions given a tag
-func (cc *CosmosProvider) QueryTxs(ctx context.Context, page, limit int, events []string) ([]*provider.RelayerTxResponse, error) {
+// queryIBCMessages returns an array of IBC messages given a tag
+func (cc *CosmosProvider) queryIBCMessages(ctx context.Context, log *zap.Logger, page, limit int, events []string) ([]ibcMessage, error) {
 	if len(events) == 0 {
 		return nil, errors.New("must declare at least one event to search")
 	}
@@ -73,39 +50,17 @@ func (cc *CosmosProvider) QueryTxs(ctx context.Context, page, limit int, events 
 	if err != nil {
 		return nil, err
 	}
-
-	// Currently, we only call QueryTxs() in two spots and in both of them we are expecting there to only be,
-	// at most, one tx in the response. Because of this we don't want to initialize the slice with an initial size.
-	var txResps []*provider.RelayerTxResponse
+	var ibcMsgs []ibcMessage
 	for _, tx := range res.Txs {
-		relayerEvents := parseEventsFromResponseDeliverTx(tx.TxResult)
-		txResps = append(txResps, &provider.RelayerTxResponse{
-			Height: tx.Height,
-			TxHash: string(tx.Hash),
-			Code:   tx.TxResult.Code,
-			Data:   string(tx.TxResult.Data),
-			Events: relayerEvents,
-		})
-	}
-	return txResps, nil
-}
-
-// parseEventsFromResponseDeliverTx parses the events from a ResponseDeliverTx and builds a slice
-// of provider.RelayerEvent's.
-func parseEventsFromResponseDeliverTx(resp abci.ResponseDeliverTx) []provider.RelayerEvent {
-	var events []provider.RelayerEvent
-
-	for _, event := range resp.Events {
-		attributes := make(map[string]string)
-		for _, attribute := range event.Attributes {
-			attributes[string(attribute.Key)] = string(attribute.Value)
+		parsedLogs, err := sdk.ParseABCILogs(tx.TxResult.Log)
+		if err != nil {
+			continue
 		}
-		events = append(events, provider.RelayerEvent{
-			EventType:  event.Type,
-			Attributes: attributes,
-		})
+
+		ibcMsgs = append(ibcMsgs, parseABCILogs(log, parsedLogs, 0)...)
 	}
-	return events
+
+	return ibcMsgs, nil
 }
 
 // QueryBalance returns the amount of coins in the relayer account
@@ -656,6 +611,62 @@ func (cc *CosmosProvider) QueryUnreceivedPackets(ctx context.Context, height uin
 		return nil, err
 	}
 	return res.Sequences, nil
+}
+
+func sendPacketQuery(channelID string, portID string, seq uint64) []string {
+	return []string{
+		fmt.Sprintf("%s.packet_src_channel='%s'", spTag, channelID),
+		fmt.Sprintf("%s.packet_src_port='%s'", spTag, portID),
+		fmt.Sprintf("%s.packet_sequence='%d'", spTag, seq),
+	}
+}
+
+func writeAcknowledgementQuery(channelID string, portID string, seq uint64) []string {
+	return []string{
+		fmt.Sprintf("%s.packet_dst_channel='%s'", waTag, channelID),
+		fmt.Sprintf("%s.packet_dst_port='%s'", waTag, portID),
+		fmt.Sprintf("%s.packet_sequence='%d'", waTag, seq),
+	}
+}
+
+func (cc *CosmosProvider) QuerySendPacket(
+	ctx context.Context,
+	srcChanID,
+	srcPortID string,
+	sequence uint64,
+) (provider.PacketInfo, error) {
+	ibcMsgs, err := cc.queryIBCMessages(ctx, cc.log, 1, 1000, sendPacketQuery(srcChanID, srcPortID, sequence))
+	if err != nil {
+		return provider.PacketInfo{}, err
+	}
+	for _, msg := range ibcMsgs {
+		if pi, ok := msg.info.(*packetInfo); ok {
+			if pi.Sequence == sequence {
+				return provider.PacketInfo(*pi), nil
+			}
+		}
+	}
+	return provider.PacketInfo{}, fmt.Errorf("no ibc messages found for send_packet query")
+}
+
+func (cc *CosmosProvider) QueryRecvPacket(
+	ctx context.Context,
+	dstChanID,
+	dstPortID string,
+	sequence uint64,
+) (provider.PacketInfo, error) {
+	ibcMsgs, err := cc.queryIBCMessages(ctx, cc.log, 1, 1000, writeAcknowledgementQuery(dstChanID, dstPortID, sequence))
+	if err != nil {
+		return provider.PacketInfo{}, err
+	}
+	for _, msg := range ibcMsgs {
+		if pi, ok := msg.info.(*packetInfo); ok {
+			if pi.Sequence == sequence {
+				return provider.PacketInfo(*pi), nil
+			}
+		}
+	}
+	return provider.PacketInfo{}, fmt.Errorf("no ibc messages found for write_acknowledgement query")
 }
 
 // QueryUnreceivedAcknowledgements returns a list of unrelayed packet acks
