@@ -1,0 +1,20 @@
+{ 
+  "type": "cosmos"
+  "value":
+    "key": "wallet"
+    "chain-id": "GAIA"
+    "rpc-addr": "http://stride.stake-take.com:46657"
+    "account-prefix": "cosmos"
+    "keyring-backend": "test"
+    "gas-adjustment": 1.2
+    "gas-prices": "0.01uatom"
+    "debug": "false"
+    "timeout": "10s"
+    "output-format: "json"
+    "sign-mode": "direct"
+    "strategy":
+    "type": "native"
+    "version": "ics20-1"
+    "order": "UNORDERED"
+  }
+}
